@@ -1,0 +1,186 @@
+# Service Definitions for Detroit Automation Academy Deployment Framework
+# Maps services to their build contexts, deployment targets, and health checks
+
+version: "1.0.0"
+date: "2026-04-01"
+
+services:
+  # Static Sites (GitHub Pages)
+  landing-page:
+    type: static
+    platform: github-pages
+    source: daa-public-staging
+    build: |
+      # Copy root HTML files
+      cp index.html enroll.html assets/ branding/ curriculum/ deployment/
+    deploy_path: /
+    domain: detroitautomationacademy.com
+    health_check: "curl -f https://detroitautomationacademy.com/"
+    timeout: 30
+    critical: true
+
+  blog-static:
+    type: static
+    platform: github-pages
+    source: daa-public-staging/blog-source
+    build: |
+      cd blog-source
+      hugo --config hugo.toml --destination ../deployment/blog
+    deploy_path: /blog
+    domain: blog.detroitautomationacademy.com
+    health_check: "curl -f https://blog.detroitautomationacademy.com/"
+    timeout: 30
+    critical: true
+
+  curriculum-static:
+    type: static
+    platform: github-pages
+    source: daa-public-staging/curriculum
+    build: |
+      cp -r curriculum/ deployment/curriculum/
+    deploy_path: /curriculum
+    domain: detroitautomationacademy.com
+    health_check: "curl -f https://detroitautomationacademy.com/curriculum/"
+    timeout: 30
+    critical: false
+
+  # Dynamic Services (GCP Cloud Run)
+  enrollment-frontend:
+    type: dynamic
+    platform: cloud-run
+    source: at-os-singularity/apps/academy/crm/frontend
+    runtime: node
+    port: 80
+    build: |
+      docker build -t gcr.io/$GCP_PROJECT_ID/daa-enroll-frontend:latest .
+    deploy:
+      project: $GCP_PROJECT_ID
+      region: us-central1
+      service: daa-enroll-frontend
+      memory: 512Mi
+      cpu: "1"
+      timeout: 60
+      max-instances: 10
+      allow-unauthenticated: true
+    environment:
+      - REACT_APP_API_BASE_URL=$REACT_APP_API_BASE_URL
+      - REACT_APP_GOOGLE_CLIENT_ID=$GOOGLE_CLIENT_ID
+    domain: enroll.detroitautomationacademy.com
+    health_check: "curl -f https://enroll.detroitautomationacademy.com/"
+    canary: 10
+    timeout: 90
+    critical: true
+
+  crm-backend:
+    type: dynamic
+    platform: cloud-run
+    source: at-os-singularity/apps/academy/crm/backend
+    runtime: go
+    port: 8080
+    build: |
+      docker build -t gcr.io/$GCP_PROJECT_ID/daa-crm-backend:latest .
+    deploy:
+      project: $GCP_PROJECT_ID
+      region: us-central1
+      service: daa-crm-backend
+      memory: 1Gi
+      cpu: "2"
+      timeout: 60
+      max-instances: 20
+      allow-unauthenticated: true
+    domain: api.detroitautomationacademy.com
+    health_check: "curl -f https://api.detroitautomationacademy.com/health"
+    canary: 10
+    timeout: 90
+    critical: true
+
+  api-backend:
+    type: dynamic
+    platform: cloud-run
+    source: at-os-singularity/kernel/infra/cms-backend/v10_backend
+    runtime: python
+    port: 8011
+    build: |
+      docker build -t gcr.io/$GCP_PROJECT_ID/daa-api-backend:latest .
+    deploy:
+      project: $GCP_PROJECT_ID
+      region: us-central1
+      service: daa-api-backend
+      memory: 2Gi
+      cpu: "4"
+      timeout: 60
+      max-instances: 10
+      allow-unauthenticated: true
+    domain: api.detroitautomationacademy.com
+    health_check: "curl -f https://api.detroitautomationacademy.com/api/health"
+    canary: 10
+    timeout: 90
+    critical: true
+
+  status-page:
+    type: dynamic
+    platform: cloud-run
+    source: oculus_core/apps/status-page
+    runtime: node
+    port: 8080
+    build: |
+      docker build -t gcr.io/$GCP_PROJECT_ID/daa-status-page:latest .
+    deploy:
+      project: $GCP_PROJECT_ID
+      region: us-central1
+      service: daa-status-page
+      memory: 256Mi
+      cpu: "0.5"
+      timeout: 60
+      max-instances: 5
+      allow-unauthenticated: true
+    domain: status.detroitautomationacademy.com
+    health_check: "curl -f https://status.detroitautomationacademy.com/health"
+    canary: 5
+    timeout: 60
+    critical: false
+
+# Deployment phases (order matters for dependencies)
+phases:
+  phase_1:
+    name: "Pre-flight Checks"
+    services: []
+    skip_health_check: true
+    
+  phase_2:
+    name: "GitHub Pages (Static)"
+    services:
+      - landing-page
+      - blog-static
+      - curriculum-static
+    parallel: true
+    
+  phase_3:
+    name: "GCP Cloud Run (Dynamic)"
+    services:
+      - crm-backend
+      - api-backend
+      - enrollment-frontend
+      - status-page
+    parallel: true
+    canary: true
+    observe_duration: 30  # seconds
+    
+  phase_4:
+    name: "Health Checks & Verification"
+    services: all
+    skip_deployment: true
+
+# Rollback triggers (automatic)
+rollback_triggers:
+  error_rate_threshold: 0.01  # 1%
+  p99_latency_threshold: 2000  # milliseconds
+  http_5xx_threshold: 5        # count per minute
+  observ_window: 30             # seconds after deployment
+
+# Dependencies
+dependencies:
+  enrollment-frontend:
+    - crm-backend
+  api-backend:
+    - crm-backend

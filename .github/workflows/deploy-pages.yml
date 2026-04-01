@@ -1,0 +1,247 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'daa-public-staging/**'
+      - '.github/workflows/deploy-pages.yml'
+  workflow_dispatch:
+    inputs:
+      debug_enabled:
+        description: 'Enable debug logging'
+        required: false
+        default: false
+
+env:
+  GITHUB_PAGES_BRANCH: gh-pages
+  DEPLOYMENT_REPO: daa-public-staging
+
+jobs:
+  build-static:
+    name: Build Static Sites
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+
+      - name: Setup Hugo
+        uses: peaceiris/actions-hugo@v2
+        with:
+          hugo-version: '0.156.0'
+          extended: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: 'daa-public-staging/blog-source/package-lock.json'
+
+      - name: Install blog dependencies
+        run: |
+          cd daa-public-staging/blog-source
+          npm ci
+
+      - name: Build Hugo blog
+        run: |
+          cd daa-public-staging/blog-source
+          hugo --config hugo.toml --destination ../../deployment/blog --minify
+
+      - name: Copy static assets
+        run: |
+          mkdir -p deployment
+          cd daa-public-staging
+          cp index.html ../deployment/ || true
+          cp enroll.html ../deployment/ || true
+          cp CNAME ../deployment/ || true
+          cp .nojekyll ../deployment/ || true
+          cp -r assets/ ../deployment/assets/ 2>/dev/null || true
+          cp -r branding/ ../deployment/branding/ 2>/dev/null || true
+          cp -r curriculum/ ../deployment/curriculum/ 2>/dev/null || true
+          cp -r qr_codes/ ../deployment/qr_codes/ 2>/dev/null || true
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: static-build
+          path: deployment/
+          retention-days: 1
+          if-no-files-found: error
+
+  health-check-pre:
+    name: Pre-Deployment Validation
+    runs-on: ubuntu-latest
+    needs: build-static
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: static-build
+          path: deployment/
+
+      - name: Verify CNAME record
+        run: |
+          if [ ! -f deployment/CNAME ]; then
+            echo "❌ CNAME not found!"
+            exit 1
+          fi
+          cat deployment/CNAME
+
+      - name: Verify required files
+        run: |
+          required_files=("deployment/index.html" "deployment/CNAME" "deployment/blog/index.html")
+          for file in "${required_files[@]}"; do
+            if [ ! -f "$file" ]; then
+              echo "❌ Required file missing: $file"
+              exit 1
+            fi
+          done
+          echo "✅ All required files present"
+
+      - name: Check file sizes
+        run: |
+          du -sh deployment/
+          find deployment -type f -name "*.html" | wc -l | xargs echo "HTML files:"
+
+  deploy:
+    name: Deploy to GitHub Pages
+    runs-on: ubuntu-latest
+    needs: health-check-pre
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: static-build
+          path: deployment/
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: deployment/
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Output deployment details
+        run: |
+          echo "✅ Deployed to GitHub Pages"
+          echo "Domain: detroitautomationacademy.com"
+          echo "Blog: blog.detroitautomationacademy.com"
+          echo "Curriculum: detroitautomationacademy.com/curriculum"
+
+  notify:
+    name: Notify Deployment
+    runs-on: ubuntu-latest
+    needs: deploy
+    if: always()
+    
+    steps:
+      - name: Prepare notification
+        id: prepare
+        run: |
+          if [ "${{ needs.deploy.result }}" == "success" ]; then
+            echo "status=✅ SUCCESS" >> $GITHUB_OUTPUT
+            echo "color=36a64b" >> $GITHUB_OUTPUT
+          else
+            echo "status=❌ FAILED" >> $GITHUB_OUTPUT
+            echo "color=ff0000" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Notify Slack
+        uses: slackapi/slack-github-action@v1.24.0
+        if: vars.SLACK_WEBHOOK_URL
+        with:
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          payload: |
+            {
+              "channel": "#deployments",
+              "username": "DAA Deployment Bot",
+              "icon_emoji": ":rocket:",
+              "attachments": [
+                {
+                  "color": "${{ steps.prepare.outputs.color }}",
+                  "title": "GitHub Pages Deployment ${{ steps.prepare.outputs.status }}",
+                  "text": "Static sites deployed to detroitautomationacademy.com",
+                  "fields": [
+                    {
+                      "title": "Commit",
+                      "value": "${{ github.sha }}",
+                      "short": true
+                    },
+                    {
+                      "title": "Author",
+                      "value": "${{ github.actor }}",
+                      "short": true
+                    },
+                    {
+                      "title": "Sites",
+                      "value": "Landing · Blog · Curriculum",
+                      "short": false
+                    }
+                  ],
+                  "footer": "Detroit Automation Academy",
+                  "ts": $(date +%s)
+                }
+              ]
+            }
+
+  health-check-post:
+    name: Post-Deployment Health Checks
+    runs-on: ubuntu-latest
+    needs: deploy
+    if: needs.deploy.result == 'success'
+    
+    steps:
+      - name: Wait for DNS propagation
+        run: sleep 10
+
+      - name: Health check - Landing page
+        run: |
+          for i in {1..5}; do
+            if curl -sf https://detroitautomationacademy.com/ > /dev/null; then
+              echo "✅ Landing page responding"
+              exit 0
+            fi
+            echo "Attempt $i/5..."
+            sleep 5
+          done
+          echo "❌ Landing page not responding"
+          exit 1
+
+      - name: Health check - Blog
+        run: |
+          curl -sf https://blog.detroitautomationacademy.com/ > /dev/null || exit 1
+          echo "✅ Blog responding"
+
+      - name: Health check - Curriculum
+        run: |
+          curl -sf https://detroitautomationacademy.com/curriculum/ > /dev/null || exit 1
+          echo "✅ Curriculum responding"
+
+      - name: Verify CNAME records
+        run: |
+          echo "Checking DNS resolution:"
+          nslookup detroitautomationacademy.com || true
+          nslookup blog.detroitautomationacademy.com || true
+          nslookup www.detroitautomationacademy.com || true

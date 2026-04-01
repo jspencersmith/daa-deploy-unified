@@ -1,0 +1,48 @@
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+logs/
+*.log
+
+# Dependencies
+node_modules/
+vendor/
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+.windows
+
+# Temporary
+tmp/
+temp/
+*.tmp
+
+# Secrets (do not commit)
+**/secrets.yaml
+**/secrets.json
+.github/workflows/secrets*
+
+# Build artifacts
+dist/
+build/
+*.o
+*.a
+*.so
+
+# Test coverage
+coverage/
+*.lcov

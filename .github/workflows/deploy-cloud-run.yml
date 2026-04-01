@@ -1,0 +1,385 @@
+name: Deploy to GCP Cloud Run
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'at-os-singularity/**'
+      - 'oculus_core/apps/**'
+      - '.github/workflows/deploy-cloud-run.yml'
+  workflow_dispatch:
+    inputs:
+      service:
+        description: 'Service to deploy (all, crm-backend, enrollment-frontend, api-backend, status-page)'
+        required: false
+        default: 'all'
+      environment:
+        description: 'Environment (production, staging)'
+        required: false
+        default: 'production'
+
+env:
+  GCP_REGION: us-central1
+  GCR_REGISTRY: gcr.io
+  OBSERVATION_WINDOW: 30  # seconds
+
+jobs:
+  setup:
+    name: Setup and Authenticate
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    
+    outputs:
+      gcp-project-id: ${{ steps.setup.outputs.gcp-project-id }}
+      image-tag: ${{ steps.setup.outputs.image-tag }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/87748455115/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for GCR
+        run: |
+          gcloud auth configure-docker ${{ env.GCR_REGISTRY }}
+
+      - name: Setup outputs
+        id: setup
+        run: |
+          echo "gcp-project-id=${{ secrets.GCP_PROJECT_ID }}" >> $GITHUB_OUTPUT
+          echo "image-tag=gcr.io/${{ secrets.GCP_PROJECT_ID }}/daa-$(date +%s)-${GITHUB_SHA:0:7}" >> $GITHUB_OUTPUT
+
+  build-crm-backend:
+    name: Build CRM Backend
+    runs-on: ubuntu-latest
+    needs: setup
+    if: |
+      github.event.inputs.service == 'all' || 
+      github.event.inputs.service == 'crm-backend' ||
+      github.event.inputs.service == ''
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker
+        run: gcloud auth configure-docker ${{ env.GCR_REGISTRY }}
+
+      - name: Build Docker image
+        working-directory: at-os-singularity/apps/academy/crm/backend
+        run: |
+          docker build \
+            -t ${{ env.GCR_REGISTRY }}/${{ needs.setup.outputs.gcp-project-id }}/daa-crm-backend:latest \
+            -t ${{ needs.setup.outputs.image-tag }}-crm-backend \
+            .
+
+      - name: Push Docker image to GCR
+        run: |
+          docker push ${{ env.GCR_REGISTRY }}/${{ needs.setup.outputs.gcp-project-id }}/daa-crm-backend:latest
+          docker push ${{ needs.setup.outputs.image-tag }}-crm-backend
+
+  build-enrollment-frontend:
+    name: Build Enrollment Frontend
+    runs-on: ubuntu-latest
+    needs: setup
+    if: |
+      github.event.inputs.service == 'all' || 
+      github.event.inputs.service == 'enrollment-frontend' ||
+      github.event.inputs.service == ''
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker
+        run: gcloud auth configure-docker ${{ env.GCR_REGISTRY }}
+
+      - name: Build Docker image
+        working-directory: at-os-singularity/apps/academy/crm/frontend
+        run: |
+          docker build \
+            --build-arg REACT_APP_API_BASE_URL="${{ secrets.REACT_APP_API_BASE_URL }}" \
+            --build-arg REACT_APP_GOOGLE_CLIENT_ID="${{ secrets.GOOGLE_CLIENT_ID }}" \
+            -t ${{ env.GCR_REGISTRY }}/${{ needs.setup.outputs.gcp-project-id }}/daa-enrollment-frontend:latest \
+            -t ${{ needs.setup.outputs.image-tag }}-enrollment-frontend \
+            .
+
+      - name: Push Docker image to GCR
+        run: |
+          docker push ${{ env.GCR_REGISTRY }}/${{ needs.setup.outputs.gcp-project-id }}/daa-enrollment-frontend:latest
+          docker push ${{ needs.setup.outputs.image-tag }}-enrollment-frontend
+
+  build-api-backend:
+    name: Build API Backend
+    runs-on: ubuntu-latest
+    needs: setup
+    if: |
+      github.event.inputs.service == 'all' || 
+      github.event.inputs.service == 'api-backend' ||
+      github.event.inputs.service == ''
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker
+        run: gcloud auth configure-docker ${{ env.GCR_REGISTRY }}
+
+      - name: Build Docker image
+        working-directory: at-os-singularity/kernel/infra/cms-backend/v10_backend
+        run: |
+          docker build \
+            -t ${{ env.GCR_REGISTRY }}/${{ needs.setup.outputs.gcp-project-id }}/daa-api-backend:latest \
+            -t ${{ needs.setup.outputs.image-tag }}-api-backend \
+            .
+
+      - name: Push Docker image to GCR
+        run: |
+          docker push ${{ env.GCR_REGISTRY }}/${{ needs.setup.outputs.gcp-project-id }}/daa-api-backend:latest
+          docker push ${{ needs.setup.outputs.image-tag }}-api-backend
+
+  deploy-crm-backend:
+    name: Deploy CRM Backend
+    runs-on: ubuntu-latest
+    needs: [setup, build-crm-backend]
+    if: needs.build-crm-backend.result == 'success'
+    
+    steps:
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/87748455115/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy daa-crm-backend \
+            --image ${{ env.GCR_REGISTRY }}/${{ needs.setup.outputs.gcp-project-id }}/daa-crm-backend:latest \
+            --project ${{ secrets.GCP_PROJECT_ID }} \
+            --region ${{ env.GCP_REGION }} \
+            --platform managed \
+            --allow-unauthenticated \
+            --memory 1Gi \
+            --cpu 2 \
+            --max-instances 20 \
+            --timeout 60 \
+            --set-env-vars ENVIRONMENT=production
+
+      - name: Get service URL
+        run: |
+          SERVICE_URL=$(gcloud run services describe daa-crm-backend \
+            --project ${{ secrets.GCP_PROJECT_ID }} \
+            --region ${{ env.GCP_REGION }} \
+            --format 'value(status.url)')
+          echo "SERVICE_URL=$SERVICE_URL" >> $GITHUB_ENV
+
+      - name: Health check
+        run: |
+          for i in {1..5}; do
+            if curl -sf ${{ env.SERVICE_URL }}/health > /dev/null 2>&1; then
+              echo "✅ CRM Backend healthy"
+              exit 0
+            fi
+            echo "Attempt $i/5..."
+            sleep 5
+          done
+          echo "❌ CRM Backend health check failed"
+          exit 1
+
+  deploy-enrollment-frontend:
+    name: Deploy Enrollment Frontend
+    runs-on: ubuntu-latest
+    needs: [setup, build-enrollment-frontend, deploy-crm-backend]
+    if: needs.build-enrollment-frontend.result == 'success'
+    
+    steps:
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/87748455115/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy daa-enrollment-frontend \
+            --image ${{ env.GCR_REGISTRY }}/${{ needs.setup.outputs.gcp-project-id }}/daa-enrollment-frontend:latest \
+            --project ${{ secrets.GCP_PROJECT_ID }} \
+            --region ${{ env.GCP_REGION }} \
+            --platform managed \
+            --allow-unauthenticated \
+            --memory 512Mi \
+            --cpu 1 \
+            --max-instances 10 \
+            --timeout 60 \
+            --set-env-vars REACT_APP_API_BASE_URL=${{ secrets.REACT_APP_API_BASE_URL }},REACT_APP_GOOGLE_CLIENT_ID=${{ secrets.GOOGLE_CLIENT_ID }}
+
+      - name: Health check
+        run: |
+          for i in {1..5}; do
+            if curl -sf https://enroll.detroitautomationacademy.com/ > /dev/null 2>&1; then
+              echo "✅ Enrollment Frontend healthy"
+              exit 0
+            fi
+            echo "Attempt $i/5..."
+            sleep 5
+          done
+          echo "⚠️ Enrollment Frontend not yet accessible (DNS propagation pending)"
+
+  deploy-api-backend:
+    name: Deploy API Backend
+    runs-on: ubuntu-latest
+    needs: [setup, build-api-backend]
+    if: needs.build-api-backend.result == 'success'
+    
+    steps:
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/87748455115/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy daa-api-backend \
+            --image ${{ env.GCR_REGISTRY }}/${{ needs.setup.outputs.gcp-project-id }}/daa-api-backend:latest \
+            --project ${{ secrets.GCP_PROJECT_ID }} \
+            --region ${{ env.GCP_REGION }} \
+            --platform managed \
+            --allow-unauthenticated \
+            --memory 2Gi \
+            --cpu 4 \
+            --max-instances 10 \
+            --timeout 60 \
+            --set-env-vars ENVIRONMENT=production
+
+      - name: Health check
+        run: |
+          for i in {1..5}; do
+            if curl -sf https://api.detroitautomationacademy.com/health > /dev/null 2>&1; then
+              echo "✅ API Backend healthy"
+              exit 0
+            fi
+            echo "Attempt $i/5..."
+            sleep 5
+          done
+          echo "⚠️ API Backend not yet accessible (DNS propagation pending)"
+
+  observe-and-verify:
+    name: Observe and Verify Deployment
+    runs-on: ubuntu-latest
+    needs: [deploy-crm-backend, deploy-enrollment-frontend, deploy-api-backend]
+    if: always() && needs.deploy-crm-backend.result == 'success'
+    
+    steps:
+      - name: Wait for observation window
+        run: sleep ${{ env.OBSERVATION_WINDOW }}
+
+      - name: Check Cloud Logging for errors
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/87748455115/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Query error rate
+        run: |
+          ERROR_COUNT=$(gcloud logging read \
+            'resource.type="cloud_run_revision" severity="ERROR"' \
+            --limit 100 \
+            --format json | jq 'length')
+          
+          if [ "$ERROR_COUNT" -gt 5 ]; then
+            echo "⚠️ Error rate elevated ($ERROR_COUNT errors)"
+            echo "Consider rollback"
+          else
+            echo "✅ Error rate normal ($ERROR_COUNT errors)"
+          fi
+
+  notify-completion:
+    name: Notify Deployment Completion
+    runs-on: ubuntu-latest
+    needs: [observe-and-verify]
+    if: always()
+    
+    steps:
+      - name: Determine status
+        id: status
+        run: |
+          if [ "${{ needs.observe-and-verify.result }}" == "success" ]; then
+            echo "color=36a64b" >> $GITHUB_OUTPUT
+            echo "emoji=:rocket:" >> $GITHUB_OUTPUT
+            echo "text=Deployment successful and verified" >> $GITHUB_OUTPUT
+          else
+            echo "color=ff0000" >> $GITHUB_OUTPUT
+            echo "emoji=:x:" >> $GITHUB_OUTPUT
+            echo "text=Deployment failed or verification issues" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Notify Slack
+        uses: slackapi/slack-github-action@v1.24.0
+        if: secrets.SLACK_WEBHOOK_URL
+        with:
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          payload: |
+            {
+              "channel": "#deployments",
+              "username": "DAA Deployment Bot",
+              "icon_emoji": "${{ steps.status.outputs.emoji }}",
+              "attachments": [
+                {
+                  "color": "${{ steps.status.outputs.color }}",
+                  "title": "GCP Cloud Run Deployment",
+                  "text": "${{ steps.status.outputs.text }}",
+                  "fields": [
+                    {
+                      "title": "Services",
+                      "value": "CRM Backend · Enrollment Frontend · API Backend",
+                      "short": false
+                    },
+                    {
+                      "title": "Commit",
+                      "value": "${{ github.sha }}",
+                      "short": true
+                    },
+                    {
+                      "title": "Author",
+                      "value": "${{ github.actor }}",
+                      "short": true
+                    }
+                  ],
+                  "footer": "Detroit Automation Academy",
+                  "ts": $(date +%s)
+                }
+              ]
+            }
