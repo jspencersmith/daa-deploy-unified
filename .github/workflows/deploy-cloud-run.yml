@@ -69,10 +69,19 @@ jobs:
       github.event.inputs.service == 'all' || 
       github.event.inputs.service == 'crm-backend' ||
       github.event.inputs.service == ''
+    permissions:
+      id-token: write
+      contents: read
     
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/87748455115/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
 
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
@@ -114,10 +123,19 @@ jobs:
       github.event.inputs.service == 'all' || 
       github.event.inputs.service == 'enrollment-frontend' ||
       github.event.inputs.service == ''
+    permissions:
+      id-token: write
+      contents: read
     
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/87748455115/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
 
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
@@ -161,10 +179,19 @@ jobs:
       github.event.inputs.service == 'all' || 
       github.event.inputs.service == 'api-backend' ||
       github.event.inputs.service == ''
+    permissions:
+      id-token: write
+      contents: read
     
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/87748455115/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
 
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
