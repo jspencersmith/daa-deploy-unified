@@ -57,8 +57,9 @@ jobs:
       - name: Setup outputs
         id: setup
         run: |
-          echo "gcp-project-id=${{ secrets.GCP_PROJECT_ID }}" >> $GITHUB_OUTPUT
-          echo "image-tag=gcr.io/${{ secrets.GCP_PROJECT_ID }}/daa-$(date +%s)-${GITHUB_SHA:0:7}" >> $GITHUB_OUTPUT
+          PROJECT_ID="project-9e091b7d-1e8e-4a4e-963"
+          echo "gcp-project-id=$PROJECT_ID" >> $GITHUB_OUTPUT
+          echo "image-tag=gcr.io/$PROJECT_ID/daa-$(date +%s)-${GITHUB_SHA:0:7}" >> $GITHUB_OUTPUT
 
   build-crm-backend:
     name: Build CRM Backend
@@ -217,7 +218,7 @@ jobs:
         run: |
           gcloud run deploy daa-crm-backend \
             --image ${{ env.GCR_REGISTRY }}/${{ needs.setup.outputs.gcp-project-id }}/daa-crm-backend:latest \
-            --project ${{ secrets.GCP_PROJECT_ID }} \
+            --project project-9e091b7d-1e8e-4a4e-963 \
             --region ${{ env.GCP_REGION }} \
             --platform managed \
             --allow-unauthenticated \
@@ -268,7 +269,7 @@ jobs:
         run: |
           gcloud run deploy daa-enrollment-frontend \
             --image ${{ env.GCR_REGISTRY }}/${{ needs.setup.outputs.gcp-project-id }}/daa-enrollment-frontend:latest \
-            --project ${{ secrets.GCP_PROJECT_ID }} \
+            --project project-9e091b7d-1e8e-4a4e-963 \
             --region ${{ env.GCP_REGION }} \
             --platform managed \
             --allow-unauthenticated \
@@ -310,7 +311,7 @@ jobs:
         run: |
           gcloud run deploy daa-api-backend \
             --image ${{ env.GCR_REGISTRY }}/${{ needs.setup.outputs.gcp-project-id }}/daa-api-backend:latest \
-            --project ${{ secrets.GCP_PROJECT_ID }} \
+            --project project-9e091b7d-1e8e-4a4e-963 \
             --region ${{ env.GCP_REGION }} \
             --platform managed \
             --allow-unauthenticated \
