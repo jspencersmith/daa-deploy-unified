@@ -346,9 +346,10 @@ jobs:
             echo "text=Deployment failed or verification issues" >> $GITHUB_OUTPUT
           fi
 
-      - name: Notify Slack
+      - name: Notify Slack (if configured)
         uses: slackapi/slack-github-action@v1.24.0
-        if: ${{ secrets.SLACK_WEBHOOK_URL != '' }}
+        if: ${{ always() }}
+        continue-on-error: true
         with:
           webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
           payload: |
